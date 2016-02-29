@@ -4,11 +4,11 @@ import setuptools
 
 setuptools.setup(
     name = "demo_bash_kernel",
-    version = "0.0",
+    version = "0.1",
     packages = [
         "demo_bash_kernel"],
     package_dir = {
         "demo_bash_kernel": "lib"},
     install_requires = [
-        "callysto",
+        "callysto==0.2",
         "pexpect"])
