@@ -3,12 +3,17 @@
 import setuptools
 
 setuptools.setup(
-    name = "demo_bash_kernel",
+    name = "example_bash_kernel",
     version = "0.1",
     packages = [
-        "demo_bash_kernel"],
+        "example_bash_kernel"],
     package_dir = {
-        "demo_bash_kernel": "lib"},
+        "example_bash_kernel": "lib"},
+    dependency_links = [
+        ("https://github.com/fgimian/paramiko-expect/tarball/"
+         "943630a#egg=paramiko-expect-0.2+git")],
     install_requires = [
         "callysto==0.2",
+        "paramiko",
+        "paramiko-expect==0.2+git",
         "pexpect"])

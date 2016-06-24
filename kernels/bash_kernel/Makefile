@@ -15,13 +15,9 @@ uninstall:
 install:
 	@echo -e "$(BOLD)installing '$(PROJECT_NAME)'$(RESET)"
 	@echo -e -n "$(DIM)"
-	@python setup.py install
+	@pip install --process-dependency-links .
 	@callysto-install-kernel $(PROJECT_NAME)
 	@echo -e -n "$(RESET)"
-
-dist:
-	@echo -e "$(BOLD)packaging '$(PROJECT_NAME)'$(RESET)"
-	@python setup.py sdist --formats=zip
 
 clean:
 	@echo -e "$(BOLD)cleaning '$(PROJECT_NAME)' repository$(RESET)"

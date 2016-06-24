@@ -1,7 +1,10 @@
-# Example SQL kernel, mimicking a SQL terminal
-# and connected to a SQLite in-memory database
+"""
+Example SQL kernel built on top of Callysto, mimicking a SQL
+interactive shell connected to a SQLite in-memory database
+"""
 
-__all__ = ("SqlKernel",)
+__all__ = (
+    "SQLKernel",)
 
 import itertools
 import logging
@@ -14,9 +17,9 @@ import callysto
 
 _logger = logging.getLogger(__name__)
 
-class SqlKernel (callysto.BaseKernel):
+class SQLKernel (callysto.BaseKernel):
     implementation_name = "SQL Kernel"
-    implementation_version = "0.0 (SQLite %s)" % sqlite3.sqlite_version
+    implementation_version = "0.1 (SQLite %s)" % sqlite3.sqlite_version
 
     language_name = "sql"
     language_mimetype = "application/sql"
@@ -31,9 +34,11 @@ class SqlKernel (callysto.BaseKernel):
 
     def do_execute_ (self, code):
         try:
+            # we detect and split individual statements, if more than one
             statements = sqlparse.split(code)
             n_statements = len(statements)
 
+            # we execute each statement individually
             for (statement_n, statement) in enumerate(statements):
                 if (n_statements > 1):
                     prefix = "statement %d of %d: " % (
@@ -91,4 +96,4 @@ class SqlKernel (callysto.BaseKernel):
             raise exception
 
 if (__name__ == "__main__"):
-    SqlKernel.launch(debug = True)
+    SQLKernel.launch(debug = True)

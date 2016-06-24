@@ -1,6 +1,6 @@
 """
-Example Neo4j kernel, mimicking a CYPHER terminal
-and connected to a Neo4j database instance
+Example Neo4j kernel built on top of Callysto, mimicking a CYPHER
+interactive shell connected to an existing Neo4j database instance
 """
 
 __all__ = (
@@ -10,7 +10,7 @@ import logging
 import re
 import urlparse
 
-import py2neo
+import neo4j.v1 as neo4j
 import pydotplus
 
 import callysto
@@ -22,65 +22,14 @@ renderer = callysto.renderers.graphviz.GraphvizRenderer()
 
 class Neo4jKernel (callysto.BaseKernel):
     implementation_name = "Neo4j Kernel"
-    implementation_version = "0.0 (py2neo %s)" % py2neo.__version__
+    implementation_version = "0.1 (neo4j-driver %s)" % neo4j.version
 
     language_name = "cypher"
-    language_file_extension = ".cypher"
-
-    def connect_to (self, code, **kwargs):
-        """ Usage: connect-to <URL> [--user STRING] [--password STRING]
-
-            Options:
-                URL                Neo4j server URL
-                --user STRING      Neo4j server username (optional)
-                --password STRING  Neo4j server password (optional)
-
-            Note that --user and --password, if provided, will
-            override any credential found in the URL itself.
-        """
-        # parse the URL, setting aside credentials (if any)
-        URL = urlparse.urlparse(kwargs["<URL>"])
-
-        url = "%s://%s%s" % (URL.scheme, URL.netloc, URL.path)
-        _logger.debug("connecting to Neo4j server at %s" % url)
-
-        # authenticate the connection if credentials are provided
-        username = kwargs.get("--user", URL.username)
-        password = kwargs.get("--password", URL.password)
-
-        if (username is not None) and (password is not None):
-            _logger.debug("authenticating with user '%s'" % username)
-            py2neo.authenticate(URL.netloc, username, password)
-            _logger.debug("authenticating: done")
-
-        self._database = py2neo.Graph(url)
-        _logger.debug("connecting: done (Neo4j server %s)" % \
-            '.'.join(map(str, self._database.neo4j_version)))
-
-    def set_node_label (self, code, **kwargs):
-        """ Usage: set-node-label <PROPERTY>
-
-            Options:
-                <PROPERTY>  Name of a node property to use as label when
-                            displaying graphs. '_id' (default) will use
-                            the node's internal identifiers; 'none' will
-                            show no label
-        """
-        self._node_label_property = kwargs["<PROPERTY>"]
-
-    def set_edge_label (self, code, **kwargs):
-        """ Usage: set-edge-label <PROPERTY>
-
-            Options:
-                <PROPERTY>  Name of a edge property to use as label when
-                            displaying graphs. '_type' (default) will use
-                            the edge's type; 'none' will show no label
-        """
-        self._edge_label_property = kwargs["<PROPERTY>"]
+    language_file_extension = ".cql"
 
     def do_startup_ (self, **kwargs):
-        # by default, connects anonymously to http://localhost:7474/db/data/
-        self._database = py2neo.Graph()
+        self._connection = None
+
         self.declare_pre_flight_command(
             "connect-to", self.connect_to)
 
@@ -118,7 +67,70 @@ class Neo4jKernel (callysto.BaseKernel):
 
         self.magic_commands.prefix = '!'
 
+    def connect_to (self, code, **kwargs):
+        """ usage: connect-to <url> [options]
+
+            <url>              Neo4j server URL
+            --user STRING      Neo4j server username (optional)
+            --password STRING  Neo4j server password (optional)
+
+            Note that --user and --password, if provided, will
+            override any credential found in the URL itself.
+        """
+        # parse the URL, setting aside credentials (if any)
+        url = urlparse.urlparse(kwargs["<url>"])
+
+        neo4j_url = "bolt://%s%s" % (url.netloc, url.path)
+        _logger.debug("connecting to Neo4j server at %s" % neo4j_url)
+
+        # authenticate the connection only if credentials are provided
+        neo4j_username = kwargs.get("--user", url.username)
+        neo4j_password = kwargs.get("--password", url.password)
+
+        if (neo4j_username is not None) and (neo4j_password is not None):
+            _logger.debug("authenticating with user '%s'" % neo4j_username)
+            token = neo4j.basic_auth(
+                neo4j_username, neo4j_password)
+        else:
+            token = None
+
+        # connect to the server
+        try:
+            neo4j_driver = neo4j.GraphDatabase.driver(neo4j_url,
+                encrypted = True, auth = token,
+                trust = neo4j.TRUST_ON_FIRST_USE)
+
+            neo4j_session = neo4j_driver.session()
+
+        except neo4j.CypherError as exception:
+            raise Exception("from Neo4j: %s" % exception)
+
+        self._connection = neo4j_session
+        _logger.debug("connecting: done (Neo4j server %s)" % \
+            '.'.join(map(str, self._connection.neo4j_version)))
+
+    def set_node_label (self, code, **kwargs):
+        """ usage: set-node-label <property>
+
+            <property>  Name of a node property to use as label when displaying
+                        graphs. '_id' (default) will use the node's internal
+                        identifiers; 'none' will show no label
+        """
+        self._node_label_property = kwargs["<property>"]
+
+    def set_edge_label (self, code, **kwargs):
+        """ usage: set-edge-label <property>
+
+            <property>  Name of a edge property to use as label when displaying
+                        graphs. '_type' (default) will use the edge's type;
+                        'none' will show no label
+        """
+        self._edge_label_property = kwargs["<property>"]
+
     def do_execute_ (self, code):
+        if (self._connection is None):
+            raise Exception("No connection to a Neo4j server instance")
+
         # we remove any comment
         statements = re.sub(re.compile(r"//.*?\n" ), '', code)
 

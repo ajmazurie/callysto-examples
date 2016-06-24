@@ -1,20 +1,20 @@
 """
-Example Bash kernel, mimicking a terminal; adapted from
-'bash_kernel' (https://github.com/takluyver/bash_kernel/)
-
-TO DO: add SSH connection through magic command
+Example BASH kernel built on top of Callysto, emulating a BASH
+terminal; users can also connect to a remote server through SSH
 """
 
-__all__ = ("BashKernel",)
+__all__ = (
+    "BashKernel",)
 
 import getpass
 import logging
+import os
 import re
 import signal
 
-from pexpect import EOF
+import paramiko
 import pexpect.replwrap
-import pexpect.pxssh
+from pexpect import EOF
 
 import callysto
 
@@ -22,7 +22,7 @@ _logger = logging.getLogger(__name__)
 
 class BashKernel (callysto.BaseKernel):
     implementation_name = "Bash Kernel"
-    implementation_version = "0.0"
+    implementation_version = "0.1"
 
     language_name = "bash"
     language_mimetype = "text/x-sh"
@@ -34,74 +34,41 @@ class BashKernel (callysto.BaseKernel):
         # to do it now since we won't be able to do it from the child process
         previous_handler = signal.signal(signal.SIGINT, signal.SIG_DFL)
         try:
-            self._local_repl = pexpect.replwrap.bash()
-            self._ssh_repl = None
+            self._bash_repl = pexpect.replwrap.bash()
         finally:
             # then we set it back to its original value
             signal.signal(signal.SIGINT, previous_handler)
 
+        # we declare a couple of magic commands to
+        # log in and out of a remote server with SSH
         self.declare_pre_flight_command(
-            "ssh-login", self.connect_with_ssh)
+            "ssh-login", self.ssh_connect)
 
         self.declare_pre_flight_command(
-            "ssh-logout", self.disconnect_from_ssh)
+            "ssh-logout", self.ssh_disconnect)
 
-    def connect_with_ssh (self, code, **kwargs):
-        """ Usage: ssh-login <ADDRESS> [--user STRING] [--password STRING]
-
-            Options:
-                <ADDRESS>           hostname
-                --user STRING       username
-                --password STRING   password
-        """
-        if (self._ssh_repl is not None):
-            raise Exception("A SSH connection is already up")
-
-        hostname = kwargs["<ADDRESS>"]
-        username = kwargs.get("--user", getpass.getuser())
-        password = kwargs.get("--password", '')
-
-        _logger.debug("SSH logging to %s@%s" % (username, hostname))
-
-        try:
-            connection = pexpect.pxssh.pxssh(echo = False)
-            connection.login(hostname, username, password)
-
-        except pexpect.pxssh.ExceptionPxssh as exception:
-            raise Exception("Unable to log to %s: %s" % (hostname, exception))
-
-        _logger.debug("SSH logging: done")
-
-        class SSHREPLWrapper (pexpect.replwrap.REPLWrapper):
-            def _expect_prompt (self, timeout = -1):
-                self.child.prompt(timeout)
-
-        self._ssh_repl = SSHREPLWrapper(
-            connection, connection.PROMPT, None)
-
-    def disconnect_from_ssh (self, code, **kwargs):
-        """ Usage: ssh-logout
-        """
-        if (self._ssh_repl is not None):
-            _logger.debug("SSH logging out")
-            self._ssh_repl.child.logout()
-            _logger.debug("SSH logging out: done")
-            self._ssh_repl = None
+        self._ssh_repl = None
 
     def do_execute_ (self, code):
-        if (self._ssh_repl is not None):
-            repl = self._ssh_repl
-        else:
-            repl = self._local_repl
+        code = code.strip()
 
+        if (self._ssh_repl is None):
+            frames = self.bash_execute(code)
+        else:
+            frames = self.ssh_execute(code)
+
+        for frame in frames:
+            yield frame
+
+    def bash_execute (self, code):
         try:
             # send any command to the underlying BASH process,
-            # then send the results to the Jupyter notebook
-            yield repl.run_command(code.strip(), timeout = None)
+            # then send the output strings to the Jupyter notebook
+            yield self._bash_repl.run_command(code.strip(), timeout = None)
 
             # retrieve the exit code of the last executed command
             try:
-                exit_code = int(repl.run_command("echo $?").strip())
+                exit_code = int(self._bash_repl.run_command("echo $?").strip())
             except:
                 exit_code = 1
 
@@ -109,7 +76,7 @@ class BashKernel (callysto.BaseKernel):
             if (exit_code != 0):
                 # send whatever text the process sent
                 # so far to the Jupyter notebook
-                content = repl.child.before
+                content = self._bash_repl.child.before
                 if (content.strip() != str(exit_code)):
                     yield content
 
@@ -120,15 +87,103 @@ class BashKernel (callysto.BaseKernel):
         except KeyboardInterrupt as exception:
             # if the user used a keyboard interrupt, we
             # propagate it to the underlying BASH process
-            repl.child.sendintr()
-            repl._expect_prompt()
+            self._bash_repl.child.sendintr()
+            self._bash_repl._expect_prompt()
 
-            yield repl.child.before
+            yield self._bash_repl.child.before
             raise exception
 
         except EOF:
-            yield repl.child.before
+            yield self._bash_repl.child.before
             self.do_startup_()
+
+    def ssh_connect (self, code, **kwargs):
+        """ usage: ssh-login <hostname> [options]
+
+                <hostname>          hostname
+                --user STRING       username
+                --password STRING   password
+                --port NUMBER       port
+        """
+        if (self._ssh_repl is not None):
+            raise Exception("A SSH connection is already up")
+
+        hostname = kwargs["<hostname>"]
+        username = kwargs.get("--user", getpass.getuser())
+        password = kwargs.get("--password", '')
+
+        try:
+            port = int(kwargs.get("--port", 22))
+        except:
+            raise Exception("Invalid value for port")
+
+        _logger.debug("SSH logging to %s@%s:%d" % (username, hostname, port))
+
+        ssh_client = paramiko.SSHClient()
+        ssh_client.load_system_host_keys()
+        ssh_client.set_missing_host_key_policy(
+            paramiko.AutoAddPolicy())
+
+        # load ~/.ssh/config, if available
+        ssh_config_fn = os.path.join(
+            os.path.expanduser("~"), ".ssh", "config")
+
+        if (os.path.isfile(ssh_config_fn)):
+            try:
+                ssh_config = paramiko.SSHConfig()
+                ssh_config.parse(open(ssh_config_fn, "rU"))
+
+            except Exception as exception:
+                _logger.error(
+                    "Unable to parse %s: %s" % (ssh_config_fn, exception))
+            else:
+                host = ssh_config.lookup(hostname)
+                _logger.debug("ssh-config entry for %s: %s" % (hostname, host))
+                hostname = host["hostname"]
+        else:
+            host = {}
+
+        try:
+            ssh_client.connect(hostname,
+                port = host.get("port", port),
+                username = host.get("user", username),
+                password = password,
+                key_filename = host.get("identityfile"))
+
+        except Exception as exception:
+            raise Exception("Unable to log to %s: %s" % (hostname, exception))
+
+        _logger.debug("SSH logging: done")
+        self._ssh_repl = ssh_client
+
+    def ssh_disconnect (self, code, **kwargs):
+        """ usage: ssh-logout
+        """
+        if (self._ssh_repl is not None):
+            _logger.debug("SSH logging out")
+            self._ssh_repl.close()
+            _logger.debug("SSH logging out: done")
+            self._ssh_repl = None
+
+    def ssh_execute (self, code):
+        try:
+            stdin, stdout, stderr = self._ssh_repl.exec_command(code)
+            exit_code = stdout.channel.recv_exit_status()
+
+            stdout = stdout.read()
+            stderr = stderr.read()
+
+        except Exception as exception:
+            raise Exception("Error while executing the command: %s" % exception)
+
+        if (len(stdout.strip()) > 0):
+            yield stdout
+        if (len(stderr.strip()) > 0):
+            yield stderr
+
+        if (exit_code != 0):
+            raise Exception(
+                "Process returned a non-zero exit code: %d" % exit_code)
 
 if (__name__ == "__main__"):
     BashKernel.launch(debug = True)

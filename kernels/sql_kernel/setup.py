@@ -3,12 +3,12 @@
 import setuptools
 
 setuptools.setup(
-    name = "demo_sql_kernel",
+    name = "example_sql_kernel",
     version = "0.1",
     packages = [
-        "demo_sql_kernel"],
+        "example_sql_kernel"],
     package_dir = {
-        "demo_sql_kernel": "lib"},
+        "example_sql_kernel": "lib"},
     install_requires = [
         "callysto==0.2",
         "sqlparse"])
